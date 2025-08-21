@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 import rclpy
+import rclpy.logging
 from rclpy.node import Node
 
 from sensor_msgs.msg import LaserScan
@@ -65,7 +66,8 @@ class GymBridge(Node):
         self.declare_parameter('sy1')
         self.declare_parameter('stheta1')
         self.declare_parameter('kb_teleop')
-
+        self.get_logger().info(f"Path of 'gym' package: {gym.__file__}")
+        
         # check num_agents
         num_agents = self.get_parameter('num_agent').value
         if num_agents < 1 or num_agents > 2:
