@@ -34,6 +34,7 @@ from geometry_msgs.msg import Transform
 from geometry_msgs.msg import Quaternion
 from ackermann_msgs.msg import AckermannDriveStamped
 from tf2_ros import TransformBroadcaster
+from std_msgs.msg import Bool
 
 import gym
 import numpy as np
@@ -83,10 +84,16 @@ class GymBridge(Node):
                             lidar_dist=self.get_parameter("scan_distance_to_base_link").value
                             )
 
-        sx = self.get_parameter('sx').value
-        sy = self.get_parameter('sy').value
-        stheta = self.get_parameter('stheta').value
-        self.ego_pose = [sx, sy, stheta]
+        # sx = self.get_parameter('sx').value
+        # sy = self.get_parameter('sy').value
+        # stheta = self.get_parameter('stheta').value
+        
+        self.sx = self.get_parameter('sx').value
+        self.sy = self.get_parameter('sy').value
+        self.stheta = self.get_parameter('stheta').value
+
+
+        self.ego_pose = [self.sx, self.sy, self.stheta]
         self.ego_speed = [0.0, 0.0, 0.0]
         self.ego_requested_speed = 0.0
         self.ego_steer = 0.0
@@ -100,8 +107,12 @@ class GymBridge(Node):
         self.angle_inc = scan_fov / scan_beams
         self.ego_namespace = self.get_parameter('ego_namespace').value
         ego_odom_topic = self.ego_namespace + '/' + self.get_parameter('ego_odom_topic').value
+        done_topic = '/done'
         self.scan_distance_to_base_link = self.get_parameter('scan_distance_to_base_link').value
-        
+        self.reward = None
+        self.done = None
+        self.info = None
+
         if num_agents == 2:
             self.has_opp = True
             self.opp_namespace = self.get_parameter('opp_namespace').value
@@ -113,7 +124,7 @@ class GymBridge(Node):
             self.opp_requested_speed = 0.0
             self.opp_steer = 0.0
             self.opp_collision = False
-            self.obs, _ , self.done, _ = self.env.reset(np.array([[sx, sy, stheta], [sx1, sy1, stheta1]]))
+            self.obs, _ , self.done, _ = self.env.reset(np.array([[self.sx, self.sy, self.stheta], [sx1, sy1, stheta1]]))
             self.ego_scan = list(self.obs['scans'][0])
             self.opp_scan = list(self.obs['scans'][1])
 
@@ -125,7 +136,7 @@ class GymBridge(Node):
             opp_ego_odom_topic = self.opp_namespace + '/' + self.get_parameter('opp_ego_odom_topic').value
         else:
             self.has_opp = False
-            self.obs, _ , self.done, _ = self.env.reset(np.array([[sx, sy, stheta]]))
+            self.obs, _ , self.done, _ = self.env.reset(np.array([[self.sx, self.sy, self.stheta]]))
             self.ego_scan = list(self.obs['scans'][0])
 
         # sim physical step timer
@@ -139,6 +150,7 @@ class GymBridge(Node):
         # publishers
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 10)
+        self.done_pub = self.create_publisher(Bool, done_topic, 10)
         self.ego_drive_published = False
         if num_agents == 2:
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
@@ -200,6 +212,7 @@ class GymBridge(Node):
             opp_pose = [self.obs['poses_x'][1], self.obs['poses_y'][1], self.obs['poses_theta'][1]]
             self.obs, _ , self.done, _ = self.env.reset(np.array([[rx, ry, rtheta], opp_pose]))
         else:
+            # self.obs, _ , self.done, _ = self.env.reset(np.array([[self.sx, self.sy, self.stheta]]))
             self.obs, _ , self.done, _ = self.env.reset(np.array([[rx, ry, rtheta]]))
         self._update_sim_state()
 
@@ -230,9 +243,14 @@ class GymBridge(Node):
 
     def drive_timer_callback(self):
         if self.ego_drive_published and not self.has_opp:
-            self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
+            self.obs, self.reward, self.done, self.info_ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
         elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
-            self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+            self.obs, self.reward, self.done, self.info = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+        
+        # Reset to starting position
+        if self.done and not self.has_opp:
+            self.obs, self.reward, self.done, self.info_ = self.env.reset(np.array([[self.sx, self.sy, self.stheta]]))
+        # self.get_logger().info(f'{self.done}, {self.reward}, {self.info}')
         self._update_sim_state()
 
     def timer_callback(self):
@@ -323,6 +341,12 @@ class GymBridge(Node):
             self.opp_odom_pub.publish(opp_odom)
             self.opp_ego_odom_pub.publish(ego_odom)
             self.ego_opp_odom_pub.publish(opp_odom)
+        
+        done_msg = Bool()
+        done_msg.data = bool(self.done)
+        self.done = False
+
+        self.done_pub.publish(done_msg)
 
     def _publish_transforms(self, ts):
         ego_t = Transform()
